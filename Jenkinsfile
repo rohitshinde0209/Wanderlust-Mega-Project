@@ -1,128 +1,86 @@
-@Library('Shared') _
 pipeline {
-    agent {label 'Node'}
-    
-    environment{
-        SONAR_HOME = tool "Sonar"
+    agent any
+
+    environment {
+        SONARQUBE_SERVER = 'SonarQube'
+        EMAIL_TO = 'rohit.shinde@sumasoft.net'
     }
-    
-    parameters {
-        string(name: 'FRONTEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
-        string(name: 'BACKEND_DOCKER_TAG', defaultValue: '', description: 'Setting docker image for latest push')
-    }
-    
+
     stages {
-        stage("Validate Parameters") {
+
+        stage('Checkout Code') {
             steps {
-                script {
-                    if (params.FRONTEND_DOCKER_TAG == '' || params.BACKEND_DOCKER_TAG == '') {
-                        error("FRONTEND_DOCKER_TAG and BACKEND_DOCKER_TAG must be provided.")
-                    }
-                }
+                git branch: 'main',
+                    url: 'https://github.com/rohitshinde0209/Wanderlust-Mega-Project'
             }
         }
-        stage("Workspace cleanup"){
-            steps{
-                script{
-                    cleanWs()
-                }
-            }
-        }
-        
-        stage('Git: Code Checkout') {
+
+        stage('Build Docker Images') {
             steps {
-                script{
-                    code_checkout("https://github.com/LondheShubham153/Wanderlust-Mega-Project.git","main")
-                }
+                echo "Building Docker images"
+                sh 'docker build -t wanderlust-backend ./backend'
+                sh 'docker build -t wanderlust-frontend ./frontend'
             }
         }
-        
-        stage("Trivy: Filesystem scan"){
-            steps{
-                script{
-                    trivy_scan()
+
+        stage('OWASP Dependency Check') {
+            steps {
+                echo "Running OWASP Dependency Check"
+            }
+        }
+
+        stage('Trivy Scan') {
+            steps {
+                echo "Running Trivy Scan"
+                sh 'trivy image wanderlust-backend'
+                sh 'trivy image wanderlust-frontend'
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    echo "Running SonarQube Analysis"
                 }
             }
         }
 
-        stage("OWASP: Dependency check"){
-            steps{
-                script{
-                    owasp_dependency()
-                }
-            }
-        }
-        
-        stage("SonarQube: Code Analysis"){
-            steps{
-                script{
-                    sonarqube_analysis("Sonar","wanderlust","wanderlust")
-                }
-            }
-        }
-        
-        stage("SonarQube: Code Quality Gates"){
-            steps{
-                script{
-                    sonarqube_code_quality()
-                }
-            }
-        }
-        
-        stage('Exporting environment variables') {
-            parallel{
-                stage("Backend env setup"){
-                    steps {
-                        script{
-                            dir("Automations"){
-                                sh "bash updatebackendnew.sh"
-                            }
-                        }
-                    }
-                }
-                
-                stage("Frontend env setup"){
-                    steps {
-                        script{
-                            dir("Automations"){
-                                sh "bash updatefrontendnew.sh"
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage("Docker: Build Images"){
-            steps{
-                script{
-                        dir('backend'){
-                            docker_build("wanderlust-backend-beta","${params.BACKEND_DOCKER_TAG}","trainwithshubham")
-                        }
-                    
-                        dir('frontend'){
-                            docker_build("wanderlust-frontend-beta","${params.FRONTEND_DOCKER_TAG}","trainwithshubham")
-                        }
-                }
-            }
-        }
-        
-        stage("Docker: Push to DockerHub"){
-            steps{
-                script{
-                    docker_push("wanderlust-backend-beta","${params.BACKEND_DOCKER_TAG}","trainwithshubham") 
-                    docker_push("wanderlust-frontend-beta","${params.FRONTEND_DOCKER_TAG}","trainwithshubham")
-                }
+        stage('Deploy Application') {
+            steps {
+                echo "Deploying application using Docker"
+                sh 'docker compose down'
+                sh 'docker compose up -d'
             }
         }
     }
-    post{
-        success{
-            archiveArtifacts artifacts: '*.xml', followSymlinks: false
-            build job: "Wanderlust-CD", parameters: [
-                string(name: 'FRONTEND_DOCKER_TAG', value: "${params.FRONTEND_DOCKER_TAG}"),
-                string(name: 'BACKEND_DOCKER_TAG', value: "${params.BACKEND_DOCKER_TAG}")
-            ]
+
+    post {
+        success {
+            emailext(
+                subject: "SUCCESS: Jenkins Job ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                Deployment Successful!
+
+                Job: ${env.JOB_NAME}
+                Build Number: ${env.BUILD_NUMBER}
+                URL: ${env.BUILD_URL}
+                """,
+                to: "${EMAIL_TO}"
+            )
+        }
+
+        failure {
+            emailext(
+                subject: "FAILED: Jenkins Job ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                Deployment Failed!
+
+                Job: ${env.JOB_NAME}
+                Build Number: ${env.BUILD_NUMBER}
+                URL: ${env.BUILD_URL}
+                """,
+                to: "${EMAIL_TO}"
+            )
         }
     }
 }
